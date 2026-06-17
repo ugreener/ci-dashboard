@@ -15,8 +15,8 @@ collector:
     gcs_url: "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results"
     bucket: "test-platform-results"
 
-    # Periodic job names to track
-    job_names:
+    # Periodic job patterns to track
+    job_patterns:
       - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-far-weekly-aws"
       - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-sbr-weekly-aws-odf"
       # Add SNR, NHC, NMO, MDR weekly jobs here when created
