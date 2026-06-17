@@ -42,6 +42,9 @@ class ProwGCSCollector(BaseCollector):
         # Authentication (optional for public Prow instances)
         self.api_token = self._get_api_token(config)
 
+        # GCS bucket name
+        self.bucket = config.get('bucket', 'test-platform-results')
+
         # Job patterns
         self.job_names = config.get('job_names', [])
         self.max_workers = config.get('max_workers', 5)
