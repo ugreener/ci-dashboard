@@ -1,31 +1,23 @@
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: winc-dashboard
+  name: ci-dashboard
   labels:
-    app: winc-dashboard
+    app: ci-dashboard
+    paas.redhat.com/appcode: ISVD-001
 spec:
   output:
     to:
       kind: ImageStreamTag
-      name: winc-dashboard:latest
+      name: ci-dashboard:latest
   source:
     type: Git
     git:
-      uri: https://github.com/redhat-community-ai-tools/ci-failure-tracker.git
+      uri: https://github.com/medik8s/ci-dashboard.git
       ref: master
-    contextDir: dashboard
   strategy:
     type: Docker
     dockerStrategy:
       dockerfilePath: Dockerfile
   triggers:
   - type: ConfigChange
-  - type: GitHub
-    github:
-      secretReference:
-        name: webhook-secret
-  - type: Generic
-    generic:
-      secretReference:
-        name: webhook-secret

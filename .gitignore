@@ -1,0 +1,17 @@
+# Database
+*.db
+data/dashboard.db
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment
+.env
+*.env.local
