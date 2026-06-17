@@ -640,7 +640,7 @@ class DashboardDatabase:
             test_name: Test name
             version: OpenShift version
             platform: Platform name (ignored - Jira issue applies to all platforms)
-            jira_issue_key: Jira issue key (e.g., WINC-1866)
+            jira_issue_key: Jira issue key (e.g., RHWA-1107)
 
         Returns:
             Number of rows updated
