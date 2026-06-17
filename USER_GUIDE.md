@@ -1,6 +1,6 @@
-# WINC Test Dashboard - User Guide
+# medik8s Test Dashboard - User Guide
 
-Simple guide for viewing WINC test health and pass rates.
+Simple guide for viewing medik8s test health and pass rates.
 
 ## What This Dashboard Shows
 
@@ -12,59 +12,31 @@ Simple guide for viewing WINC test health and pass rates.
 ## Prerequisites
 
 - Python 3.10 or higher
-- VPN connection to Red Hat network
-- ReportPortal API token
+- Network access to Prow GCS bucket (public, no auth needed)
 
 ## One-Time Setup
 
 ### 1. Install the Dashboard
 
 ```bash
-cd dashboard
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Get Your ReportPortal API Token
-
-1. Go to: https://reportportal-openshift.apps.dno.ocp-hub.prod.psi.redhat.com
-2. Click your profile picture (top right)
-3. Click "Profile"
-4. Copy the API token
-
-### 3. Save Your Token
-
-Add this line to your `~/.zshrc` file:
-
-```bash
-export REPORTPORTAL_API_TOKEN="paste-your-token-here"
-```
-
-Then reload it:
-
-```bash
-source ~/.zshrc
-```
-
 ## Daily Usage
 
-### Step 1: Connect to VPN
-
-Make sure you're connected to the Red Hat VPN.
-
-### Step 2: Update Data (Do This Once Per Day)
+### Step 1: Update Data (Do This Once Per Day)
 
 ```bash
-cd dashboard
 source venv/bin/activate
-./dashboard.py collect --days 30
+./dashboard.py collect --days 90
 ```
 
-**What this does:** Downloads the last 30 days of test results from ReportPortal
+**What this does:** Downloads the last 90 days of test results from Prow GCS (public bucket, no VPN needed)
 **How long it takes:** About 30 seconds
 
-### Step 3: Start the Dashboard
+### Step 2: Start the Dashboard
 
 ```bash
 ./dashboard.py serve
@@ -112,10 +84,10 @@ When you open http://localhost:8080, you'll see:
 ### Common Questions
 
 **Q: How often should I update the data?**
-A: Once per day is sufficient. Run `./dashboard.py collect --days 30` each morning.
+A: Once per day is sufficient. Run `./dashboard.py collect --days 90` each morning.
 
 **Q: What's a good pass rate?**
-A: For WINC tests:
+A: For medik8s tests:
 - Above 90%: Excellent
 - 80-90%: Good
 - 70-80%: Needs attention
@@ -126,8 +98,8 @@ A: They failed every single time in the selected period. These are top priority 
 
 **Q: The numbers look wrong. What should I do?**
 A:
-1. Make sure you're on VPN
-2. Run `./dashboard.py collect --days 30` to refresh data
+1. Verify `config.yaml` job names match current Prow periodic jobs
+2. Run `./dashboard.py collect --days 90` to refresh data
 3. Restart the dashboard with `./dashboard.py serve`
 
 **Q: Can I share this dashboard with others?**
@@ -137,11 +109,10 @@ A: No, it's running on your local machine (localhost). Each person needs to run 
 
 ```bash
 # 1. Start virtual environment (always do this first)
-cd dashboard
 source venv/bin/activate
 
 # 2. Collect latest data (once per day)
-./dashboard.py collect --days 30
+./dashboard.py collect --days 90
 
 # 3. Start dashboard
 ./dashboard.py serve
@@ -156,16 +127,16 @@ source venv/bin/activate
 ## Troubleshooting
 
 ### Error: "Connection failed"
-**Solution:** Connect to Red Hat VPN first
+**Solution:** Check network connectivity. Prow GCS is public, but the OpenShift-deployed dashboard requires VPN (route uses `shard: internal`).
 
-### Error: "API token not provided"
-**Solution:** Make sure you set `REPORTPORTAL_API_TOKEN` in ~/.zshrc and ran `source ~/.zshrc`
+### Error: "No job runs found"
+**Solution:** Verify that `config.yaml` has the correct Prow job names and that `lookback_days` is large enough for weekly jobs
 
 ### Error: "Database not found"
-**Solution:** Run `./dashboard.py collect --days 30` first to create the database
+**Solution:** Run `./dashboard.py collect --days 90` first to create the database
 
 ### Dashboard shows old data
-**Solution:** Run `./dashboard.py collect --days 30` to refresh
+**Solution:** Run `./dashboard.py collect --days 90` to refresh
 
 ### Dashboard won't start
 **Solution:**
@@ -179,9 +150,8 @@ source venv/bin/activate
 
 1. **Monday morning:**
    ```bash
-   cd dashboard
    source venv/bin/activate
-   ./dashboard.py collect --days 30
+   ./dashboard.py collect --days 90
    ./dashboard.py serve
    ```
 
@@ -234,17 +204,17 @@ tracking:
 ```yaml
 tracking:
   blocklist:
-    - "OCP-60944"  # Removed from test suite
-    - "OCP-66352"  # Not a WINC test
+    - "Verify FenceAgentsRemediation CR remediation flow"
+    - "Some flaky test description to exclude"
 ```
 
-These tests will be hidden from the dashboard even if they appear in ReportPortal.
+Blocklist entries match the `test_name` stored in the database. For medik8s Ginkgo tests, this is the cleaned test description (not an OCP-XXXXX ID). These tests will be hidden from the dashboard even if they appear in Prow GCS results.
 
 ## Support
 
 For technical issues or questions:
 - **Contact:** Ronnie Rasouli (rrasouli@redhat.com)
-- **Team:** WINC QE Team
+- **Team:** medik8s QE Team
 
 ---
 

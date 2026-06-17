@@ -16,8 +16,24 @@ import urllib3
 
 from .base import BaseCollector, TestResult, JobRun, TestStatus
 
-# Disable SSL warnings for internal services
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+def _parse_ssl_verify():
+    """Parse REPORTPORTAL_SSL_VERIFY into a value suitable for requests.Session.verify.
+
+    Accepts 'true'/'yes'/'1' (system CA store), 'false'/'no'/'0' (disable),
+    or a file path to a custom CA bundle (e.g. /etc/pki/tls/certs/ca-bundle.crt).
+    """
+    raw = os.getenv('REPORTPORTAL_SSL_VERIFY', 'true').strip()
+    if not raw:
+        return True
+    if raw.lower() in ('false', '0', 'no'):
+        return False
+    if raw.lower() in ('true', '1', 'yes'):
+        return True
+    return raw
+
+_ssl_verify = _parse_ssl_verify()
+if _ssl_verify is False:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +56,7 @@ class ReportPortalCollector(BaseCollector):
             'Authorization': f'Bearer {self.api_token}',
             'Content-Type': 'application/json'
         })
-        self.session.verify = False  # For internal Red Hat services
+        self.session.verify = _ssl_verify
 
     @property
     def name(self) -> str:
@@ -89,13 +105,13 @@ class ReportPortalCollector(BaseCollector):
         """
         Extract version and platform from launch name
 
-        Example: periodic-ci-openshift-openshift-tests-private-release-4.21-amd64-aws-winc-e2e
-        Extracts: version="4.21", platform="aws"
+        Example: periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-far-weekly-aws
+        Extracts: version="4.22", platform="aws"
         """
         metadata = {'version': 'unknown', 'platform': 'unknown'}
 
-        # Extract version (e.g., 4.21, 4.22)
-        version_match = re.search(r'release-(\d+\.\d+)', launch_name)
+        # Extract version (e.g., 4.21, 4.22) from release- or main- prefixed segments
+        version_match = re.search(r'(?:release|main)-(\d+\.\d+)', launch_name)
         if version_match:
             metadata['version'] = version_match.group(1)
 
@@ -218,23 +234,21 @@ class ReportPortalCollector(BaseCollector):
         max_pages = self.config.get('max_pages', 10)
 
         if not job_patterns:
-            job_patterns = ['winc']  # Default to all WINC jobs
+            logger.warning("No job_patterns configured for ReportPortal")
+            return []
 
         # ReportPortal filter.cnt.name means "contains" - no wildcards needed
         # Extract the key search term from patterns (remove wildcards)
         patterns = []
         for p in job_patterns:
-            # Remove wildcards and {version} placeholders
-            # Extract meaningful search terms
-            clean = p.replace('*', '').replace('{version}', '')
-            # Extract key identifier (e.g., "winc" from the pattern)
-            if 'winc' in clean.lower():
-                patterns.append('winc')
-            elif 'windows' in clean.lower():
-                patterns.append('windows')
+            clean = p.replace('*', '').replace('{version}', '').strip('-')
+            if clean:
+                patterns.append(clean)
 
-        # Remove duplicates
-        patterns = list(set(patterns)) if patterns else ['winc']
+        patterns = list(set(patterns)) if patterns else []
+        if not patterns:
+            logger.warning("No valid search patterns derived from job_patterns")
+            return []
 
         # Query each pattern separately
         for pattern in patterns:

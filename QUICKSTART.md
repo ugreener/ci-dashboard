@@ -1,6 +1,6 @@
 # Quick Start Guide - Prow GCS Collector
 
-This dashboard tracks WINC test pass rates over time by pulling data directly from Prow's GCS buckets.
+This dashboard tracks medik8s test pass rates over time by pulling data directly from Prow's GCS buckets.
 
 ## Why Prow GCS?
 
@@ -14,7 +14,6 @@ This dashboard tracks WINC test pass rates over time by pulling data directly fr
 ### 1. Install Dependencies
 
 ```bash
-cd dashboard
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -22,19 +21,16 @@ pip install -r requirements.txt
 
 ### 2. Verify Configuration
 
-The `config.yaml` is pre-configured for WINC tests with Prow GCS:
+The `config.yaml` is pre-configured for medik8s tests with Prow GCS:
 
 ```yaml
 collector:
-  type: "prow-gcs"  # Using Prow GCS collector
+  type: "prow_gcs"
   prow_gcs:
     job_names:
-      # 4.21 WINC jobs
-      - "periodic-ci-openshift-openshift-tests-private-release-4.21-amd64-aws-winc-e2e"
-      - "periodic-ci-openshift-openshift-tests-private-release-4.21-amd64-gcp-winc-e2e"
-      # 4.22 WINC jobs
-      - "periodic-ci-openshift-openshift-tests-private-release-4.22-amd64-aws-winc-e2e"
-      - "periodic-ci-openshift-openshift-tests-private-release-4.22-amd64-gcp-winc-e2e"
+      - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-far-weekly-aws"
+      - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-sbr-weekly-aws-odf"
+      # Add SNR, NHC, NMO, MDR weekly jobs when created
 ```
 
 ### 3. Test Connection
@@ -163,14 +159,14 @@ collector:
 
 ## Comparison to Sippy
 
-| Feature | Sippy | This Dashboard |
-|---------|-------|---------------|
-| Data source | Aggregated from multiple sources | Direct from Prow GCS |
-| OTP coverage | Limited/Unknown | Full coverage |
-| UI | Dense, complex | Clean, focused |
-| Customization | Fixed views | Fully customizable |
-| Authentication | None needed | None needed |
-| Team focus | All OpenShift | WINC-specific |
+| Feature        | Sippy                            | This Dashboard       |
+| -------------- | -------------------------------- | -------------------- |
+| Data source    | Aggregated from multiple sources | Direct from Prow GCS |
+| OTP coverage   | Limited/Unknown                  | Full coverage        |
+| UI             | Dense, complex                   | Clean, focused       |
+| Customization  | Fixed views                      | Fully customizable   |
+| Authentication | None needed                      | None needed          |
+| Team focus     | All OpenShift                    | medik8s-specific     |
 
 ## Questions?
 

@@ -149,7 +149,7 @@ class WeeklyReportGenerator:
 
         # Build report
         lines = []
-        lines.append(f"WINC PROW CI Health — Week {comparison['current_period']}")
+        lines.append(f"CI Dashboard Health — Week {comparison['current_period']}")
         lines.append("")
         lines.append("Pass Rate:")
 
@@ -238,7 +238,7 @@ class WeeklyReportGenerator:
         # Build report
         lines = []
         lines.append("=" * 70)
-        lines.append(f"WINC PROW CI Health Report — Week {comparison['current_period']}")
+        lines.append(f"CI Dashboard Health Report — Week {comparison['current_period']}")
         lines.append("=" * 70)
         lines.append("")
         lines.append("PLATFORM PASS RATES (Week-over-Week)")

@@ -43,10 +43,18 @@ class JiraIntegration:
         """Check if Jira credentials are available"""
         # Check for Jira API token
         self.jira_token = os.environ.get('JIRA_API_TOKEN')
-        self.jira_email = os.environ.get('JIRA_EMAIL', 'automation@redhat.com')  # Default email for API calls
+        self.jira_email = os.environ.get('JIRA_EMAIL', 'medik8s-qe-bot@redhat.com')
 
-        if not self.jira_token:
-            logger.warning("Jira integration disabled: Missing JIRA_API_TOKEN environment variable")
+        if not self.jira_token or not self.jira_email:
+            missing = []
+            if not self.jira_token:
+                missing.append('JIRA_API_TOKEN')
+            if not self.jira_email:
+                missing.append('JIRA_EMAIL')
+            logger.warning(
+                "Jira integration disabled: Missing %s",
+                ', '.join(missing)
+            )
             return False
 
         return True
@@ -186,42 +194,53 @@ class JiraIntegration:
         # Create issue summary and description
         platforms_str = ', '.join(platforms) if platforms else 'multiple platforms'
         summary = f"{test_name}: Test failure on {platforms_str} {version}"
+        if len(summary) > 255:
+            suffix = f"...: Test failure on {platforms_str} {version}"
+            allowed = max(0, 255 - len(suffix))
+            if allowed > 0:
+                summary = f"{test_name[:allowed]}{suffix}"
+            else:
+                summary = summary[:252] + "..."
 
         # Dashboard link
-        dashboard_url = os.environ.get('DASHBOARD_URL', 'https://winc-dashboard-poc-winc-dashboard-poc.apps.build10.ci.devcluster.openshift.com')
+        dashboard_url = os.environ.get('DASHBOARD_URL', '').strip()
 
         # Minimal Atlassian Document Format (ADF) - avoid CONTENT_LIMIT_EXCEEDED
         # Truncate error message to first 500 chars
         error_msg_short = (error_message[:500] + "...") if error_message and len(error_message) > 500 else (error_message or "No error message")
 
+        content_nodes = [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": f"Test: {test_name}\n"},
+                    {"type": "text", "text": f"Version: {version}\n"},
+                    {"type": "text", "text": f"Affected Platforms: {platforms_str}\n"},
+                    {"type": "text", "text": f"Failure Rate: {failure_rate:.1f}% ({failures}/{runs} runs)"}
+                ]
+            },
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Error: ", "marks": [{"type": "strong"}]},
+                    {"type": "text", "text": error_msg_short}
+                ]
+            }
+        ]
+
+        if dashboard_url:
+            content_nodes.append({
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Dashboard: "},
+                    {"type": "text", "text": dashboard_url, "marks": [{"type": "link", "attrs": {"href": dashboard_url}}]}
+                ]
+            })
+
         description = {
             "version": 1,
             "type": "doc",
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {"type": "text", "text": f"Test: {test_name}\n"},
-                        {"type": "text", "text": f"Version: {version}\n"},
-                        {"type": "text", "text": f"Affected Platforms: {platforms_str}\n"},
-                        {"type": "text", "text": f"Failure Rate: {failure_rate:.1f}% ({failures}/{runs} runs)"}
-                    ]
-                },
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {"type": "text", "text": "Error: ", "marks": [{"type": "strong"}]},
-                        {"type": "text", "text": error_msg_short}
-                    ]
-                },
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {"type": "text", "text": "Dashboard: "},
-                        {"type": "text", "text": dashboard_url, "marks": [{"type": "link", "attrs": {"href": dashboard_url}}]}
-                    ]
-                }
-            ]
+            "content": content_nodes
         }
 
         try:
@@ -302,8 +321,8 @@ def get_jira_integration() -> Optional[JiraIntegration]:
 
     if _jira_instance is None:
         # Load configuration from environment
-        jira_url = os.environ.get('JIRA_URL', 'https://issues.redhat.com')
-        jira_project = os.environ.get('JIRA_PROJECT', 'WINC')
+        jira_url = os.environ.get('JIRA_URL', 'https://redhat.atlassian.net')
+        jira_project = os.environ.get('JIRA_PROJECT', 'RHWA')
         jira_component = os.environ.get('JIRA_COMPONENT')
 
         config = JiraConfig(

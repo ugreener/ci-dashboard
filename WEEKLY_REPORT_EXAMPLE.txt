@@ -6,7 +6,7 @@ EXAMPLE WEEKLY REPORTS - Different Output Formats
 # Usage: ./dashboard.py report --weekly
 
 ======================================================================
-WINC PROW CI Health Report — Week Mar 17–24
+CI Dashboard Health Report — Week Mar 17–24
 ======================================================================
 
 PLATFORM PASS RATES (Week-over-Week)
@@ -42,7 +42,7 @@ Period:            2024-03-17 to 2024-03-24
 # Usage: ./dashboard.py report --weekly --slack
 # Copy/paste into Slack channel
 
-WINC PROW CI Health — Week Mar 17–24
+CI Dashboard Health — Week Mar 17–24
 
 Pass Rate:
 [OK] AWS       85% → 98%   ↑+13%
@@ -75,7 +75,7 @@ You can customize:
 # AUTOMATION EXAMPLES
 
 # Daily collection (run via cron)
-0 9 * * * cd /path/to/dashboard && python3 dashboard.py collect --days 30
+0 9 * * * cd /path/to/dashboard && python3 dashboard.py collect --days 90
 
 # Weekly report on Monday morning
 0 10 * * 1 cd /path/to/dashboard && python3 dashboard.py report --weekly --slack --output /tmp/weekly-report.txt
@@ -92,7 +92,7 @@ notification:
   slack:
     enabled: true
     webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-    channel: "#windows-containers"
+    channel: "#medik8s-qe"
 
 Then run:
 ./dashboard.py report --weekly --slack --post

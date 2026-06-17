@@ -95,7 +95,7 @@ class ProwGCSCollector(BaseCollector):
                 logger.error(f"[prow_gcs]   1. Login to OpenShift cluster: oc login https://api.ci.l2s4.p1.openshiftapps.com")
                 logger.error(f"[prow_gcs]   2. Get new token: oc whoami -t")
                 logger.error(f"[prow_gcs]   3. Update secret: oc create secret generic prow-api-token --from-literal=token=YOUR_TOKEN --dry-run=client -o yaml | oc apply -f -")
-                logger.error(f"[prow_gcs]   4. Restart deployment: oc rollout restart deployment/winc-dashboard-zstream")
+                logger.error(f"[prow_gcs]   4. Restart deployment: oc rollout restart deployment/ci-dashboard")
                 return False
             elif response.status_code != 200:
                 logger.error(f"[prow_gcs] Health check failed: HTTP {response.status_code}")
@@ -114,13 +114,10 @@ class ProwGCSCollector(BaseCollector):
         version = 'unknown'
         platform = 'unknown'
 
-        # Extract version (e.g., 4.21, 4.22)
-        # Note: main branch maps to 4.22 (current development version)
-        version_match = re.search(r'release-(4\.\d+)', job_name)
+        # Extract version (e.g., 4.21, 4.22, 5.0) from release- or main- prefixed segments
+        version_match = re.search(r'(?:release|main)-(\d+\.\d+)', job_name)
         if version_match:
             version = version_match.group(1)
-        elif '-main-' in job_name:
-            version = '4.22'
 
         # Extract platform
         platforms = ['aws', 'gcp', 'azure', 'vsphere', 'nutanix', 'metal']
@@ -133,53 +130,30 @@ class ProwGCSCollector(BaseCollector):
 
     def _extract_test_name(self, raw_name: str) -> tuple:
         """
-        Extract clean test name and description from raw name
+        Extract clean test name and description from raw name.
 
-        Example formats:
-        - "OCP-25593:sgao:Windows_Containers:[sig-windows] Windows_Containers Prevent scheduling..."
-        - "Smokerun-Author:rrasouli-Medium-37362-[wmco] wmco using correct golang version"
+        Handles both OCP-XXXXX format (upstream) and Ginkgo format (medik8s):
+        - "OCP-25593:sgao:...[sig-windows] Prevent scheduling..."
+        - "[It] [FAR] Verify FenceAgentsRemediation CR remediation flow"
 
-        Returns: ("OCP-XXXXX", "clean description")
+        Returns: (test_id, description)
         """
-        # Try to find OCP-XXXXX pattern
         ocp_match = re.search(r'OCP-\d+', raw_name)
 
         if ocp_match:
             test_id = ocp_match.group(0)
-
-            # Look for [sig-windows] or similar bracket pattern and extract everything after it
-            sig_match = re.search(r'\[sig-[\w-]+\]\s+(.+)', raw_name)
-            if sig_match:
-                description = sig_match.group(1)
-            else:
-                # Try other bracket patterns like [wmco]
-                bracket_match = re.search(r'\[[\w-]+\]\s+(.+)', raw_name)
-                if bracket_match:
-                    description = bracket_match.group(1)
-                else:
-                    # No bracket pattern found, extract after OCP ID
-                    after_id = raw_name.split(test_id, 1)[-1]
-                    description = after_id.strip(':- \t')
-
-            # Remove Windows_Containers prefix (always) - handle : - or space separators
-            description = re.sub(r'^Windows_Containers[:\-\s]+', '', description)
-
-            # Remove Smokerun prefix
-            description = re.sub(r'^Smokerun-[^\s]+\s+', '', description)
-
-            # Remove [wmco] or similar prefixes at the start
-            description = re.sub(r'^\[[\w-]+\]\s+', '', description)
-
-            # Remove all bracketed tags like [Slow], [Disruptive], [Serial]
-            description = re.sub(r'\s*\[[\w-]+\]', '', description)
-
-            # Remove any remaining leading separators (: - or spaces)
+            after_id = raw_name.split(test_id, 1)[-1]
+            description = after_id.strip(':- \t')
+            description = re.sub(r'\s*\[[^\]]+\]', '', description)
             description = re.sub(r'^[:\-\s]+', '', description)
-
             return test_id, description.strip() if description else test_id
-        else:
-            # No OCP-XXXXX found, return original name
-            return raw_name, ''
+
+        description = raw_name.strip()
+        description = re.sub(r'^\[It\]\s*', '', description)
+        description = re.sub(r'\s*\[(Slow|Serial|Disruptive|Flaky|sig-[\w-]+)\]', '', description, flags=re.IGNORECASE)
+        description = description.strip()
+        test_id = description if description else raw_name
+        return test_id, description
 
     def collect_job_runs(
         self,
@@ -236,7 +210,7 @@ class ProwGCSCollector(BaseCollector):
                     if not matched:
                         continue
 
-                # Exclude non-Windows test jobs that match -winc- pattern
+                # Exclude unrelated test jobs by suffix
                 excluded_suffixes = ['-compliance', '-compliance-destructive', '-file-integrity']
                 if any(job_name.endswith(suffix) for suffix in excluded_suffixes):
                     continue
@@ -500,15 +474,28 @@ class ProwGCSCollector(BaseCollector):
                     if test_filter and test_filter not in raw_test_name:
                         continue
 
+                    # Skip empty test names
+                    raw_test_name = raw_test_name.strip()
+                    if not raw_test_name:
+                        continue
+
+                    # Skip Ginkgo infrastructure/lifecycle entries (not real tests)
+                    skip_prefixes = ('[BeforeSuite]', '[AfterSuite]',
+                                     '[SynchronizedBeforeSuite]', '[SynchronizedAfterSuite]',
+                                     '[ReportAfterSuite]', '[ReportBeforeSuite]',
+                                     '[BeforeEach]', '[AfterEach]',
+                                     '[BeforeAll]', '[AfterAll]',
+                                     '[JustBeforeEach]', '[JustAfterEach]',
+                                     '[DeferCleanup]', '[CleanupAfterEach]',
+                                     '[CleanupAfterAll]')
+                    if any(raw_test_name.startswith(p) for p in skip_prefixes):
+                        continue
+
                     # Extract clean test name (OCP-XXXXX) and description
                     test_name, test_description = self._extract_test_name(raw_test_name)
 
                     # Filter by test name pattern
                     if test_names and test_name not in test_names:
-                        continue
-
-                    # Only include OCP-* tests (filter out infrastructure)
-                    if not test_name.startswith('OCP-'):
                         continue
 
                     # Determine status

@@ -1,88 +1,51 @@
-# CI Test Dashboard Configuration
+# CI Test Dashboard Configuration - medik8s operators
 #
-# ============================================================================
-# CUSTOMIZE THIS FILE FOR YOUR TEAM
-# ============================================================================
+# Tracks Prow periodic test results for medik8s RHWA operators:
+# FAR, SBR, SNR, NHC, NMO, MDR
 #
-# This example is configured for monitoring OpenShift CI periodic jobs.
-# To use for your team:
-# 1. Update job_names below to match your periodic CI jobs
-# 2. Adjust versions and platforms in the tracking section
-# 3. Update blocklist with test IDs to exclude
-# 4. Deploy locally or to OpenShift
-#
-# Example job patterns for different teams:
-#   - Networking: "periodic-ci-*-network-*", "periodic-ci-*-ovn-*"
-#   - Storage:    "periodic-ci-*-storage-*", "periodic-ci-*-csi-*"
-#   - Your team:  "periodic-ci-*-{your-component}-*"
-# ============================================================================
+# Data source: Prow GCS bucket (public, no auth needed)
 
 # Data collector configuration
 collector:
-  # Type of collector: "reportportal", "prow_gcs"
-  # You must specify 'type' in your configuration
-  # type: "reportportal"  # Uncomment and set your collector type
+  type: "prow_gcs"
 
-  # ReportPortal configuration
-  reportportal:
-    url: "https://reportportal-openshift.apps.dno.ocp-hub.prod.psi.redhat.com"
-    project: "prow"
-    # API token from environment variable: REPORTPORTAL_API_TOKEN
+  # Prow GCS configuration
+  prow_gcs:
+    prow_url: "https://prow.ci.openshift.org"
+    gcs_url: "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results"
+    bucket: "test-platform-results"
 
-    # Job patterns (supports {version} placeholder)
-    job_patterns:
-      - "periodic-ci-openshift-COMPONENT-release-{version}-*"
-      - "pull-ci-openshift-COMPONENT-release-{version}-*"
+    # Periodic job names to track
+    job_names:
+      - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-far-weekly-aws"
+      - "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-sbr-weekly-aws-odf"
+      # Add SNR, NHC, NMO, MDR weekly jobs here when created
 
-    # API settings
-    page_size: 150
-    max_pages: 10
-    max_workers: 5
+  # ReportPortal (disabled - uncomment and set values)
+  # reportportal:
+  #   url: "https://your-reportportal.example.com"
+  #   project: "your-project"
+  #   # API token: REPORTPORTAL_API_TOKEN env var
+  #   job_patterns:
+  #     - "periodic-ci-your-team-*"
 
 # Tracking configuration
 tracking:
-  # ========================================================================
-  # CUSTOMIZE: OpenShift versions to monitor for your team
-  # ========================================================================
   versions:
-    - "4.17"
-    - "4.18"
+    - "4.22"
 
-  # ========================================================================
-  # CUSTOMIZE: Cloud platforms to track for your team
-  # Common platforms: aws, azure, gcp, vsphere, nutanix, metal, alibabacloud
-  # ========================================================================
   platforms:
     - "aws"
-    - "azure"
-    - "gcp"
 
-  # ========================================================================
-  # CUSTOMIZE: Test suite filter - only collect tests matching this pattern
-  #
-  # Examples for different teams:
-  #   - Networking:         "Networking"
-  #   - Storage:            "Storage"
-  #   - Windows Containers: "Windows_Containers"
-  #   - Leave empty to collect all tests (no filter)
-  #
-  # The filter checks if this string appears in the raw test name/description
-  # ========================================================================
   test_suite_filter: ""
 
-  # How many days to look back when collecting data
-  lookback_days: 30
+  # Weekly jobs need longer lookback than daily
+  lookback_days: 90
 
-  # ========================================================================
-  # CUSTOMIZE: Blocklist - exclude specific test IDs from dashboard
-  # Add test IDs that should not appear in your team's dashboard
-  # ========================================================================
-  blocklist:
-    - "OCP-00000"  # Example: test no longer relevant
+  blocklist: []
 
 # Database configuration
 database:
-  # Path to SQLite database file
   path: "/data/dashboard.db"
 
 # Web server configuration
@@ -91,10 +54,7 @@ web:
   port: 8080
   debug: false
 
-# Collection schedule (for automated runs)
+# Collection schedule (for automated runs via CronJob)
 schedule:
-  # Run data collection automatically
   enabled: false
-
-  # Cron expression (e.g., "0 9 * * *" for daily at 9 AM)
-  cron: "0 9 * * *"
+  cron: "0 8 * * *"
