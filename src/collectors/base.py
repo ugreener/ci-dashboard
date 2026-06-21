@@ -35,6 +35,8 @@ class TestResult:
     version: str  # e.g., "4.21", "4.22"
     platform: str  # e.g., "aws", "gcp", "azure"
     test_description: Optional[str] = None  # Human-readable test description
+    polarion_id: Optional[str] = None  # Polarion test case ID (e.g., OCP-66026)
+    operator: Optional[str] = None  # Operator name (e.g., FAR, SBR)
 
     # Links
     job_url: Optional[str] = None

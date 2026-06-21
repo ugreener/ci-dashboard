@@ -131,32 +131,61 @@ class ProwGCSCollector(BaseCollector):
 
         return version, platform
 
-    def _extract_test_name(self, raw_name: str) -> tuple:
+    def _extract_test_name(self, raw_name: str) -> tuple[str, str, Optional[str]]:
         """
-        Extract clean test name and description from raw name.
+        Extract clean test name, description, and Polarion ID from raw name.
 
         Handles both OCP-XXXXX format (upstream) and Ginkgo format (medik8s):
         - "OCP-25593:sgao:...[sig-windows] Prevent scheduling..."
-        - "[It] [FAR] Verify FenceAgentsRemediation CR remediation flow"
+        - "[It] FAR Post Deployment tests Verify ... [far, 66026, test_id:66026]"
 
-        Returns: (test_id, description)
+        Returns: (test_id, description, polarion_id)
         """
+        polarion_match = re.search(r'test_id:\s*(\d+)', raw_name, re.IGNORECASE)
+        polarion_id = f"OCP-{polarion_match.group(1)}" if polarion_match else None
+
         ocp_match = re.search(r'OCP-\d+', raw_name)
 
         if ocp_match:
             test_id = ocp_match.group(0)
+            if not polarion_id:
+                polarion_id = test_id
+            elif polarion_id != test_id:
+                logger.warning(f"Polarion ID mismatch: polarion_id={polarion_id} vs OCP token {test_id} in: {raw_name}")
             after_id = raw_name.split(test_id, 1)[-1]
             description = after_id.strip(':- \t')
             description = re.sub(r'\s*\[[^\]]+\]', '', description)
             description = re.sub(r'^[:\-\s]+', '', description)
-            return test_id, description.strip() if description else test_id
+            return test_id, description.strip() if description else test_id, polarion_id
 
         description = raw_name.strip()
         description = re.sub(r'^\[It\]\s*', '', description)
         description = re.sub(r'\s*\[(Slow|Serial|Disruptive|Flaky|sig-[\w-]+)\]', '', description, flags=re.IGNORECASE)
+        description = re.sub(
+            r'\s*\[[^\]]*test_id:\s*\d+[^\]]*\]\s*$',
+            '',
+            description,
+            flags=re.IGNORECASE,
+        )
         description = description.strip()
         test_id = description if description else raw_name
-        return test_id, description
+        return test_id, description, polarion_id
+
+    def _extract_operator(self, job_name: str, raw_test_name: str = '') -> Optional[str]:
+        """Extract operator name from Prow job name, with test-name fallback."""
+        job_lower = job_name.lower()
+        operators = ['far', 'sbr', 'snr', 'nhc', 'nmo', 'mdr']
+        for op in operators:
+            if f'-e2e-{op}-' in job_lower or job_lower.endswith(f'-e2e-{op}'):
+                return op.upper()
+
+        if raw_test_name:
+            test_lower = raw_test_name.lower()
+            for op in operators:
+                if f'[{op}]' in test_lower or f'[{op},' in test_lower:
+                    return op.upper()
+
+        return None
 
     def collect_job_runs(
         self,
@@ -506,8 +535,8 @@ class ProwGCSCollector(BaseCollector):
                     if any(raw_test_name.startswith(p) for p in skip_prefixes):
                         continue
 
-                    # Extract clean test name (OCP-XXXXX) and description
-                    test_name, test_description = self._extract_test_name(raw_test_name)
+                    # Extract clean test name, description, and Polarion ID
+                    test_name, test_description, polarion_id = self._extract_test_name(raw_test_name)
 
                     # Filter by test name pattern
                     if test_names and test_name not in test_names:
@@ -551,6 +580,8 @@ class ProwGCSCollector(BaseCollector):
                     else:
                         log_url = f"{self.gcs_url}/logs/{job_run.job_name}/{job_run.build_id}/build-log.txt"
 
+                    operator = self._extract_operator(job_run.job_name, raw_test_name)
+
                     result = TestResult(
                         test_name=test_name,
                         status=status,
@@ -562,6 +593,8 @@ class ProwGCSCollector(BaseCollector):
                         version=job_run.version,
                         platform=job_run.platform,
                         test_description=test_description,
+                        polarion_id=polarion_id,
+                        operator=operator,
                         job_url=job_run.job_url,
                         log_url=log_url
                     )

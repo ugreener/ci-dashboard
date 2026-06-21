@@ -80,6 +80,12 @@ class DashboardDatabase:
                 platform TEXT NOT NULL,
                 job_url TEXT,
                 log_url TEXT,
+                manual_classification TEXT,
+                classified_by TEXT,
+                classification_timestamp DATETIME,
+                jira_issue_key TEXT,
+                polarion_id TEXT,
+                operator TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(test_name, job_name, build_id)
             )
@@ -171,6 +177,16 @@ class DashboardDatabase:
             # Column already exists
             pass
 
+        # Add Polarion ID and operator columns
+        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(test_results)")}
+        if 'polarion_id' not in existing_cols:
+            cursor.execute("ALTER TABLE test_results ADD COLUMN polarion_id TEXT")
+        if 'operator' not in existing_cols:
+            cursor.execute("ALTER TABLE test_results ADD COLUMN operator TEXT")
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_test_results_operator ON test_results(operator)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_test_results_polarion_id ON test_results(polarion_id)")
+
         self.conn.commit()
 
     def insert_job_runs(self, job_runs: List[JobRun]) -> int:
@@ -233,10 +249,23 @@ class DashboardDatabase:
         for result in test_results:
             try:
                 cursor.execute("""
-                    INSERT OR REPLACE INTO test_results (
+                    INSERT INTO test_results (
                         test_name, test_description, status, timestamp, duration_seconds, error_message,
-                        job_name, build_id, version, platform, job_url, log_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        job_name, build_id, version, platform, job_url, log_url,
+                        polarion_id, operator
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(test_name, job_name, build_id) DO UPDATE SET
+                        test_description = excluded.test_description,
+                        status = excluded.status,
+                        timestamp = excluded.timestamp,
+                        duration_seconds = excluded.duration_seconds,
+                        error_message = excluded.error_message,
+                        version = excluded.version,
+                        platform = excluded.platform,
+                        job_url = excluded.job_url,
+                        log_url = excluded.log_url,
+                        polarion_id = COALESCE(excluded.polarion_id, test_results.polarion_id),
+                        operator = COALESCE(excluded.operator, test_results.operator)
                 """, (
                     result.test_name,
                     result.test_description,
@@ -249,7 +278,9 @@ class DashboardDatabase:
                     result.version,
                     result.platform,
                     result.job_url,
-                    result.log_url
+                    result.log_url,
+                    result.polarion_id,
+                    result.operator,
                 ))
                 inserted += 1
             except sqlite3.IntegrityError:
