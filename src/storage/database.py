@@ -2,10 +2,13 @@
 SQLite database for storing historical test results and metrics
 """
 
+import logging
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from collectors.base import JobRun, TestResult, TestStatus
 
@@ -23,19 +26,55 @@ class DashboardDatabase:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Allow SQLite to be used across threads (safe for read-mostly workloads)
-        # Use longer timeout to handle concurrent access
-        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
-        self.conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+        self._check_integrity_and_recover(db_path)
 
-        # Try to enable WAL mode for better concurrent access (ignore if fails)
-        try:
-            self.conn.execute('PRAGMA journal_mode=WAL')
-        except sqlite3.OperationalError:
-            # WAL mode might fail if database is on read-only filesystem or other constraints
-            pass
+        self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
+        self.conn.row_factory = sqlite3.Row
+
+        # Use DELETE journal mode (not WAL) for NFS compatibility.
+        # WAL requires shared-memory mmap which NFS does not support reliably,
+        # causing "database disk image is malformed" corruption.
+        mode = self.conn.execute('PRAGMA journal_mode=DELETE').fetchone()
+        if mode and mode[0] != 'delete':
+            logger.warning("Failed to set DELETE journal mode, got: %s", mode[0])
+        self.conn.execute('PRAGMA synchronous=FULL')
 
         self._create_tables()
+
+    @staticmethod
+    def _check_integrity_and_recover(db_path: str):
+        """Check database integrity on startup; delete and recreate if corrupt."""
+        if not Path(db_path).exists():
+            return
+
+        try:
+            conn = sqlite3.connect(db_path, timeout=5.0)
+            try:
+                result = conn.execute('PRAGMA integrity_check').fetchone()
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as e:
+            logger.warning("Database unavailable during integrity check: %s", e)
+            return
+        except sqlite3.DatabaseError as e:
+            logger.warning("Corrupt database detected (%s), deleting and recreating", e)
+            for suffix in ('', '-wal', '-shm', '-journal'):
+                try:
+                    Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+                except OSError as err:
+                    logger.warning("Could not delete %s%s: %s", db_path, suffix, err)
+            return
+
+        if not result or result[0] != 'ok':
+            logger.warning(
+                "Corrupt database detected (integrity_check: %s), deleting and recreating",
+                result[0] if result else "no result",
+            )
+            for suffix in ('', '-wal', '-shm', '-journal'):
+                try:
+                    Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+                except OSError as err:
+                    logger.warning("Could not delete %s%s: %s", db_path, suffix, err)
 
     def _create_tables(self):
         """Create database schema"""
