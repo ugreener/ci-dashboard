@@ -3,7 +3,7 @@ Flask web server for dashboard
 """
 
 from flask import Flask, render_template, jsonify, request, send_file
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import yaml
 import threading
@@ -255,7 +255,7 @@ def run_collection_background(db_path: str, config_file: str = 'config.yaml', da
         logger.info(f"Collection complete! Inserted {inserted_jobs} job runs and {inserted_tests} test results")
         collection_status['progress'] = f'Complete! Saved {inserted_jobs} job runs and {inserted_tests} test results'
         collection_status['error'] = None
-        collection_status['completed_at'] = datetime.now().isoformat()
+        collection_status['completed_at'] = datetime.now(timezone.utc).isoformat()
 
     except Exception as e:
         logger.error(f"Collection failed: {e}", exc_info=True)
