@@ -13,7 +13,6 @@ import logging
 import io
 import csv
 from openpyxl import Workbook
-from openpyxl.chart import PieChart, Reference
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -33,6 +32,66 @@ collection_status = {
     'completed_at': None,
     'lock': threading.Lock()
 }
+
+
+def _md_cell(val):
+    """Escape a value for use in a markdown table cell."""
+    return str(val or '').replace('|', '\\|').replace('\n', ' ').replace('\r', ' ').strip()
+
+
+def _fbc_short(fbc_image):
+    """Extract a short display label from an FBC catalog image reference."""
+    if not fbc_image:
+        return ''
+    if '@' in fbc_image:
+        return fbc_image.split('@')[-1][:15]
+    if ':' in fbc_image:
+        return fbc_image.split(':')[-1][:10]
+    return fbc_image
+
+
+def _format_export_row(row, empty_placeholder='-'):
+    """Shared row formatting for XLSX/CSV/Markdown exports."""
+    job_name = row.get('periodic_job') or ''
+    build_id = row.get('build_id') or ''
+    step_name = row.get('step_name') or ''
+    urls = _build_log_urls(job_name, build_id, step_name)
+    short_job = job_name.replace('periodic-ci-medik8s-system-tests-main-', '')
+    dur_secs = row.get('job_duration')
+    if dur_secs and dur_secs > 0:
+        h = int(dur_secs) // 3600
+        m = (int(dur_secs) % 3600) // 60
+        duration_str = f"{h}h {m}m" if h > 0 else f"{m}m"
+    else:
+        duration_str = empty_placeholder
+    run_date_raw = row.get('run_date') or ''
+    run_date = run_date_raw.split('T')[0] if run_date_raw else empty_placeholder
+    result = row.get('result') or ''
+    result_str = 'PASSED' if result == 'passed' else 'FAILED' if result == 'failed' else (result.upper() or '-')
+    return {
+        'short_job': short_job, 'duration_str': duration_str,
+        'run_date': run_date, 'result_str': result_str, **urls,
+    }
+
+
+GCS_BUCKET = 'test-platform-results'
+GCSWEB_HOST = 'gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com'
+
+
+def _build_log_urls(job_name, build_id, step_name):
+    """Build GCS and gcsweb log URLs from job metadata."""
+    has_job = bool(job_name and build_id)
+    gcs_base = f"https://storage.googleapis.com/{GCS_BUCKET}/logs/{job_name}/{build_id}" if has_job else ''
+    artifacts_base = f"{gcs_base}/artifacts/{step_name}" if (has_job and step_name) else ''
+    gcsweb_base = f"https://{GCSWEB_HOST}/gcs/{GCS_BUCKET}/logs/{job_name}/{build_id}" if has_job else ''
+    return {
+        'e2e_log_url': f"{artifacts_base}/e2e-test/build-log.txt" if (has_job and step_name) else '',
+        'install_log_url': f"{artifacts_base}/ipi-install-install/build-log.txt" if (has_job and step_name) else '',
+        'subscribe_log_url': f"{artifacts_base}/medik8s-operator-subscribe/build-log.txt" if (has_job and step_name) else '',
+        'catalog_log_url': f"{artifacts_base}/medik8s-catalogsource/build-log.txt" if (has_job and step_name) else '',
+        'artifacts_url': f"{gcsweb_base}/artifacts/{step_name}/gather-must-gather/" if (has_job and step_name) else '',
+        'build_log_url': f"{gcs_base}/build-log.txt" if has_job else '',
+    }
 
 
 def run_collection_background(db_path: str, config_file: str = 'config.yaml', days: int = 30):
@@ -429,7 +488,7 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
 
     @app.route('/api/test-results')
     def api_test_results():
-        """Get enriched test results with all 16 spreadsheet columns"""
+        """Get enriched test results with all 17 spreadsheet columns"""
         days = request.args.get('days', 30, type=int)
         operator = request.args.get('operator')
         version = normalize_version(request.args.get('version'))
@@ -441,23 +500,14 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
             step_name = row.get('step_name') or ''
             job_name = row.get('periodic_job') or ''
             build_id = row.get('build_id') or ''
-            gcs_base = f"https://storage.googleapis.com/test-platform-results/logs/{job_name}/{build_id}"
-            artifacts_base = f"{gcs_base}/artifacts/{step_name}" if step_name else gcs_base
-            gcsweb_base = f"https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/{job_name}/{build_id}"
+            urls = _build_log_urls(job_name, build_id, step_name)
 
             fbc_image = row.get('fbc_image') or ''
-            fbc_short = ''
+            fbc_short_val = _fbc_short(fbc_image)
             fbc_tag_url = ''
-            if fbc_image:
-                if '@' in fbc_image:
-                    fbc_short = fbc_image.split('@')[-1][:15]
-                elif ':' in fbc_image:
-                    fbc_short = fbc_image.split(':')[-1][:8]
-                else:
-                    fbc_short = fbc_image
-                if 'quay.io/' in fbc_image:
-                    repo_path = fbc_image.split('quay.io/')[-1].split('@')[0].split(':')[0]
-                    fbc_tag_url = f"https://quay.io/repository/{repo_path}?tab=tags"
+            if fbc_image and 'quay.io/' in fbc_image:
+                repo_path = fbc_image.split('quay.io/')[-1].split('@')[0].split(':')[0]
+                fbc_tag_url = f"https://quay.io/repository/{repo_path}?tab=tags"
 
             polarion_id = row.get('polarion_id') or ''
             polarion_url = f"https://polarion.engineering.redhat.com/polarion/#/project/OSE/workitem?id={polarion_id}" if polarion_id else ''
@@ -475,14 +525,10 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
                 'ocp_version': row.get('ocp_version'),
                 'csv_version': row.get('csv_version'),
                 'fbc_image': fbc_image,
-                'fbc_image_short': fbc_short,
+                'fbc_image_short': fbc_short_val,
                 'fbc_image_url': fbc_tag_url,
                 'prow_url': row.get('job_url') or '',
-                'e2e_log_url': f"{artifacts_base}/e2e-test/build-log.txt" if step_name else '',
-                'install_log_url': f"{artifacts_base}/ipi-install-install/build-log.txt" if step_name else '',
-                'subscribe_log_url': f"{artifacts_base}/medik8s-operator-subscribe/build-log.txt" if step_name else '',
-                'artifacts_url': f"{gcsweb_base}/artifacts/{step_name}/gather-must-gather/" if step_name else '',
-                'build_log_url': f"{gcs_base}/build-log.txt",
+                **urls,
                 'polarion_id': polarion_id,
                 'polarion_url': polarion_url,
                 'classification': row.get('manual_classification'),
@@ -512,8 +558,7 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
             step_name = row.get('step_name') or ''
             job_name = row.get('job_name') or ''
             build_id = row.get('build_id') or ''
-            gcs_base = f"https://storage.googleapis.com/test-platform-results/logs/{job_name}/{build_id}"
-            gcsweb_base = f"https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/{job_name}/{build_id}"
+            urls = _build_log_urls(job_name, build_id, step_name)
 
             runs.append({
                 'job_name': job_name,
@@ -532,8 +577,7 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
                 'failed_tests': row.get('failed_tests'),
                 'pass_rate': row.get('pass_rate'),
                 'prow_url': row.get('job_url') or '',
-                'artifacts_url': f"{gcsweb_base}/artifacts/{step_name}/gather-must-gather/" if step_name else '',
-                'build_log_url': f"{gcs_base}/build-log.txt",
+                **urls,
             })
 
         return jsonify({'job_runs': runs})
@@ -958,295 +1002,167 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
 
     @app.route('/api/export')
     def api_export():
-        """Export test results to XLSX, CSV, or MD format"""
+        """Export test results to XLSX, CSV, or MD format matching reference Google Sheet"""
         export_format = request.args.get('format', 'xlsx')
         days = request.args.get('days', 30, type=int)
         version_param = request.args.get('version')
         version = normalize_version(version_param)
 
-        # Debug logging
         logger.info(f"[EXPORT] Received: format={export_format}, days={days}, version_param={version_param}, normalized_version={version}")
 
-        # Get metadata to get all platforms
-        query = "SELECT DISTINCT platform FROM test_results WHERE platform IS NOT NULL ORDER BY platform"
-        platforms_data = db.execute_query(query)
-        platforms = [row['platform'] for row in platforms_data] if platforms_data else []
+        enriched_rows = db.get_enriched_test_results(days=days, version=version)
+        logger.info(f"[EXPORT] Found {len(enriched_rows)} enriched test results")
 
-        # Collect data for all platforms
-        all_data = {}
-        pass_rates = {}
-
-        for platform in platforms:
-            logger.info(f"[EXPORT] Fetching {platform} data: days={days}, version={version}")
-            tests = calculator.get_test_rankings(days=days, version=version, platform=platform, limit=1000)
-            logger.info(f"[EXPORT] {platform}: Found {len(tests)} tests")
-            all_data[platform] = tests
-
-            # Calculate pass rate for this platform
-            if tests:
-                total_executions = sum(test['total_runs'] for test in tests)
-                passed_executions = sum(test['passed_runs'] for test in tests)
-                pass_rate = (passed_executions / total_executions * 100) if total_executions > 0 else 0
-                pass_rates[platform] = pass_rate
-
-        # Generate file based on format
         today = datetime.now().strftime('%Y-%m-%d')
         filename = f'dashboard-export-{version}-{days}days-{today}'
 
         if export_format == 'xlsx':
-            return export_to_xlsx(all_data, pass_rates, filename, version, days)
+            return export_to_xlsx_enriched(enriched_rows, filename, version, days)
         elif export_format == 'csv':
-            return export_to_csv(all_data, filename, version, days)
+            return export_to_csv_enriched(enriched_rows, filename, version, days)
         elif export_format == 'md':
-            return export_to_markdown(all_data, filename, version, days)
+            return export_to_markdown_enriched(enriched_rows, filename, version, days)
         else:
             return jsonify({'error': 'Invalid format. Use xlsx, csv, or md'}), 400
 
-    def export_to_xlsx(all_data, pass_rates, filename, version, days):
-        """Export to Excel with multiple sheets and pass rate chart"""
+    def export_to_xlsx_enriched(enriched_rows, filename, version, days):
+        """Export to Excel matching the reference Google Sheet 17-column structure"""
         wb = Workbook()
-        wb.remove(wb.active)  # Remove default sheet
+        ws = wb.active
+        ws.title = 'Test Results'
 
-        # Create a summary sheet first
-        summary_sheet = wb.create_sheet('Summary', 0)
+        header_fill = PatternFill(start_color='1F4E79', end_color='1F4E79', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF', size=10)
+        link_font = Font(color='0563C1', underline='single', size=10)
+        data_font = Font(size=10)
+        pass_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+        pass_font = Font(color='006100', size=10, bold=True)
+        fail_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        fail_font = Font(color='9C0006', size=10, bold=True)
+        alt_fill = PatternFill(start_color='D6E4F0', end_color='D6E4F0', fill_type='solid')
 
-        # Add version and date range info at the top
-        summary_sheet['A1'] = f'Version: {version}'
-        summary_sheet['A1'].font = Font(bold=True, size=14)
-        summary_sheet['A2'] = f'Time Range: {days} days'
-        summary_sheet['A2'].font = Font(bold=True, size=14)
-        summary_sheet['A3'] = f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-        summary_sheet['A3'].font = Font(size=11, italic=True)
+        headers = [
+            'Test Name', 'Operator', 'Result', 'Periodic Job', 'Run Date',
+            'Job Duration', 'OCP Version', 'Platform', 'Operator CSV Version',
+            'FBC Catalog Image', 'Prow Job', 'E2E Test Log',
+            'Operator Install Log', 'CatalogSource Log', 'Artifacts', 'Build Log', 'Polarion ID'
+        ]
+        col_widths = [48, 11, 10, 30, 14, 14, 44, 11, 37, 42, 13, 16, 24, 24, 15, 13, 15]
 
-        # Headers starting from row 5
-        summary_sheet['A5'] = 'Platform'
-        summary_sheet['B5'] = 'Pass Rate (%)'
-        summary_sheet['C5'] = 'Total Tests'
-        summary_sheet['D5'] = 'Total Executions'
-        summary_sheet['E5'] = 'Passed'
-        summary_sheet['F5'] = 'Failed'
-
-        # Style header
-        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
-        header_font = Font(bold=True, color='FFFFFF')
-        for col in ['A', 'B', 'C', 'D', 'E', 'F']:
-            cell = summary_sheet[f'{col}5']
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num, value=header)
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(horizontal='center')
+            cell.alignment = Alignment(horizontal='center', vertical='middle', wrap_text=True)
 
-        # Add platform summary data (starting from row 6)
-        row = 6
-        for platform, tests in all_data.items():
-            if not tests:
-                continue
+        ws.row_dimensions[1].height = 35
+        ws.freeze_panes = 'A2'
 
-            total_tests = len(tests)
-            total_executions = sum(test['total_runs'] for test in tests)
-            passed_executions = sum(test['passed_runs'] for test in tests)
-            failed_executions = total_executions - passed_executions
-            pass_rate = pass_rates.get(platform, 0)
+        for col_num, width in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(col_num)].width = width
 
-            summary_sheet[f'A{row}'] = platform
-            summary_sheet[f'B{row}'] = round(pass_rate, 1)
-            summary_sheet[f'C{row}'] = total_tests
-            summary_sheet[f'D{row}'] = total_executions
-            summary_sheet[f'E{row}'] = passed_executions
-            summary_sheet[f'F{row}'] = failed_executions
-            row += 1
+        for row_idx, row in enumerate(enriched_rows, 2):
+            fmt = _format_export_row(row)
+            short_job = fmt['short_job']
+            duration_str = fmt['duration_str']
+            run_date = fmt['run_date']
+            result_str = fmt['result_str']
 
-        # Add pass rate pie chart
-        if len(all_data) > 0:
-            chart = PieChart()
-            chart.title = 'Pass Rate by Platform'
-            chart.height = 12
-            chart.width = 20
+            fbc_image = row.get('fbc_image') or ''
+            fbc_short = _fbc_short(fbc_image)
 
-            labels = Reference(summary_sheet, min_col=1, min_row=6, max_row=row-1)
-            data = Reference(summary_sheet, min_col=2, min_row=5, max_row=row-1)
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(labels)
+            polarion_id = row.get('polarion_id') or ''
 
-            summary_sheet.add_chart(chart, 'H6')
+            is_alt = (row_idx % 2 == 0)
 
-        # Adjust column widths
-        summary_sheet.column_dimensions['A'].width = 20
-        summary_sheet.column_dimensions['B'].width = 15
-        summary_sheet.column_dimensions['C'].width = 15
-        summary_sheet.column_dimensions['D'].width = 18
-        summary_sheet.column_dimensions['E'].width = 15
-        summary_sheet.column_dimensions['F'].width = 15
+            ws.cell(row=row_idx, column=1, value=row.get('test_description') or row.get('test_name')).font = data_font
+            ws.cell(row=row_idx, column=2, value=row.get('operator') or '').font = data_font
+            ws.cell(row=row_idx, column=2).alignment = Alignment(horizontal='center')
 
-        # Create Variants sheet
-        variants_sheet = wb.create_sheet('Variants')
+            result_cell = ws.cell(row=row_idx, column=3, value=result_str)
+            result_cell.alignment = Alignment(horizontal='center')
+            if result_str == 'PASSED':
+                result_cell.fill = pass_fill
+                result_cell.font = pass_font
+            elif result_str == 'FAILED':
+                result_cell.fill = fail_fill
+                result_cell.font = fail_font
 
-        # Headers
-        variants_sheet['A1'] = 'Platform'
-        variants_sheet['B1'] = 'Variant'
-        variants_sheet['C1'] = 'Job URL'
-        variants_sheet['D1'] = 'Build Date'
+            ws.cell(row=row_idx, column=4, value=short_job).font = data_font
+            ws.cell(row=row_idx, column=5, value=run_date).font = data_font
+            ws.cell(row=row_idx, column=5).alignment = Alignment(horizontal='center')
+            ws.cell(row=row_idx, column=6, value=duration_str).font = data_font
+            ws.cell(row=row_idx, column=6).alignment = Alignment(horizontal='center')
+            ws.cell(row=row_idx, column=7, value=row.get('ocp_version') or row.get('version') or '').font = data_font
+            ws.cell(row=row_idx, column=7).alignment = Alignment(horizontal='center')
+            ws.cell(row=row_idx, column=8, value=(row.get('platform') or '').upper()).font = data_font
+            ws.cell(row=row_idx, column=8).alignment = Alignment(horizontal='center')
+            ws.cell(row=row_idx, column=9, value=row.get('csv_version') or '').font = data_font
 
-        # Style header
-        for col in ['A', 'B', 'C', 'D']:
-            cell = variants_sheet[f'{col}1']
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal='center')
+            fbc_cell = ws.cell(row=row_idx, column=10, value=fbc_short or '-')
+            if fbc_image and 'quay.io/' in fbc_image:
+                repo_path = fbc_image.split('quay.io/')[-1].split('@')[0].split(':')[0]
+                fbc_url = f"https://quay.io/repository/{repo_path}?tab=tags"
+                fbc_cell.hyperlink = fbc_url
+                fbc_cell.font = link_font
 
-        # Query for latest job runs per platform variant
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=int(days))
+            prow_url = row.get('job_url') or ''
+            prow_cell = ws.cell(row=row_idx, column=11, value='View Job' if prow_url else '-')
+            prow_cell.alignment = Alignment(horizontal='center')
+            if prow_url:
+                prow_cell.hyperlink = prow_url
+                prow_cell.font = link_font
 
-        # Get all unique job runs for this version within time range
-        variant_query = """
-            SELECT DISTINCT job_name, platform, job_url, timestamp, build_id
-            FROM job_runs
-            WHERE version = ? AND timestamp >= ? AND timestamp <= ?
-            ORDER BY platform, job_name, timestamp DESC
-        """
-        variant_results = db.execute_query(variant_query, [version, start_date, end_date])
+            e2e_url = fmt['e2e_log_url']
+            e2e_cell = ws.cell(row=row_idx, column=12, value='Test Log' if e2e_url else '-')
+            e2e_cell.alignment = Alignment(horizontal='center')
+            if e2e_url:
+                e2e_cell.hyperlink = e2e_url
+                e2e_cell.font = link_font
 
-        # Extract variant info from job names
-        def extract_variant(job_name, platform):
-            """Extract variant name from job name"""
-            job_lower = job_name.lower()
+            sub_url = fmt['subscribe_log_url']
+            sub_cell = ws.cell(row=row_idx, column=13, value='Install Log' if sub_url else '-')
+            sub_cell.alignment = Alignment(horizontal='center')
+            if sub_url:
+                sub_cell.hyperlink = sub_url
+                sub_cell.font = link_font
 
-            # Check for known variants
-            if 'proxy' in job_lower and platform.lower() == 'vsphere':
-                return 'proxy'
-            elif 'disconnected' in job_lower and platform.lower() == 'vsphere':
-                return 'disconnected'
-            elif 'upi' in job_lower:
-                return 'upi'
-            elif 'ipi' in job_lower:
-                # Default IPI (not proxy, not disconnected)
-                if 'proxy' not in job_lower and 'disconnected' not in job_lower:
-                    return 'ipi-connected'
+            cat_url = fmt['catalog_log_url']
+            cat_cell = ws.cell(row=row_idx, column=14, value='Catalog Log' if cat_url else '-')
+            cat_cell.alignment = Alignment(horizontal='center')
+            if cat_url:
+                cat_cell.hyperlink = cat_url
+                cat_cell.font = link_font
 
-            # Default fallback
-            return 'ipi-connected'
+            art_url = fmt['artifacts_url']
+            art_cell = ws.cell(row=row_idx, column=15, value='Artifacts' if art_url else '-')
+            art_cell.alignment = Alignment(horizontal='center')
+            if art_url:
+                art_cell.hyperlink = art_url
+                art_cell.font = link_font
 
-        # Group by platform and variant, keep only the latest run for each
-        variant_data = {}
-        for row in variant_results:
-            platform = row['platform']
-            job_name = row['job_name']
-            variant = extract_variant(job_name, platform)
-            key = (platform, variant)
+            bld_url = fmt['build_log_url']
+            bld_cell = ws.cell(row=row_idx, column=16, value='Build Log' if bld_url else '-')
+            bld_cell.alignment = Alignment(horizontal='center')
+            if bld_url:
+                bld_cell.hyperlink = bld_url
+                bld_cell.font = link_font
 
-            # Keep only the latest run for each platform-variant combination
-            if key not in variant_data:
-                variant_data[key] = {
-                    'job_url': row['job_url'],
-                    'timestamp': row['timestamp'],
-                    'job_name': job_name
-                }
+            pol_cell = ws.cell(row=row_idx, column=17, value=polarion_id or '-')
+            pol_cell.alignment = Alignment(horizontal='center')
+            if polarion_id:
+                pol_url = f"https://polarion.engineering.redhat.com/polarion/#/project/OSE/workitem?id={polarion_id}"
+                pol_cell.hyperlink = pol_url
+                pol_cell.font = link_font
 
-        # Write variant data to sheet
-        row_num = 2
-        for (platform, variant), data in sorted(variant_data.items()):
-            variants_sheet.cell(row=row_num, column=1, value=platform)
-            variants_sheet.cell(row=row_num, column=2, value=variant)
+            if is_alt:
+                for c in range(1, 18):
+                    if c == 3:  # skip Result column to preserve pass/fail coloring
+                        continue
+                    ws.cell(row=row_idx, column=c).fill = alt_fill
 
-            job_url = data['job_url'] or ''
-            variants_sheet.cell(row=row_num, column=3, value=job_url)
+        ws.auto_filter.ref = f"A1:Q{len(enriched_rows) + 1}"
 
-            # Make URL clickable
-            if job_url:
-                cell = variants_sheet.cell(row=row_num, column=3)
-                cell.hyperlink = job_url
-                cell.font = Font(color='0563C1', underline='single')
-
-            # Format timestamp
-            timestamp_str = data['timestamp']
-            try:
-                if isinstance(timestamp_str, str):
-                    ts = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                else:
-                    ts = timestamp_str
-                build_date = ts.strftime('%Y-%m-%d %H:%M')
-            except:
-                build_date = str(timestamp_str)
-
-            variants_sheet.cell(row=row_num, column=4, value=build_date)
-            row_num += 1
-
-        # Adjust column widths
-        variants_sheet.column_dimensions['A'].width = 20
-        variants_sheet.column_dimensions['B'].width = 20
-        variants_sheet.column_dimensions['C'].width = 80
-        variants_sheet.column_dimensions['D'].width = 20
-
-        # Create a sheet for each platform
-        for platform, tests in all_data.items():
-            if not tests:
-                continue
-
-            sheet = wb.create_sheet(platform)
-
-            # Headers
-            headers = ['Test ID', 'Title', 'Status', 'Prow URL', 'Comments']
-            for col_num, header in enumerate(headers, 1):
-                cell = sheet.cell(row=1, column=col_num, value=header)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal='center')
-
-            # Add test data
-            for row_num, test in enumerate(tests, 2):
-                # Extract test ID from test_name (e.g., "OCP-12345" or just use the name)
-                test_id = test['test_name'].split('-')[0] if '-' in test['test_name'] else test['test_name']
-
-                # Get the most recent NON-SKIPPED run to determine current status
-                # We exclude skipped tests from dashboard/export per team policy
-                query = """
-                    SELECT status, job_url FROM test_results
-                    WHERE test_name = ? AND platform = ? AND version = ?
-                      AND status != 'skipped'
-                    ORDER BY timestamp DESC LIMIT 1
-                """
-                result = db.execute_query(query, [test['test_name'], platform, version])
-
-                # Determine status and URL from the latest non-skipped run
-                job_url = ''
-                status = 'Unknown'
-                if result and len(result) > 0:
-                    latest_status = result[0]['status']
-                    job_url = result[0]['job_url'] or ''
-                    # Map database status to export status
-                    if latest_status == 'passed':
-                        status = 'Passed'
-                    elif latest_status == 'failed':
-                        status = 'Failed'
-                    else:
-                        status = latest_status.capitalize() if latest_status else 'Unknown'
-                else:
-                    # If no non-skipped runs found, skip this test entirely
-                    continue
-
-                if result and result[0]['job_url']:
-                    job_url = result[0]['job_url']
-
-                sheet.cell(row=row_num, column=1, value=test['test_name'])
-                sheet.cell(row=row_num, column=2, value=test.get('test_description', ''))
-                sheet.cell(row=row_num, column=3, value=status)
-                sheet.cell(row=row_num, column=4, value=job_url)
-                sheet.cell(row=row_num, column=5, value='')  # Empty comments column
-
-                # Make URL clickable if it exists
-                if job_url:
-                    cell = sheet.cell(row=row_num, column=4)
-                    cell.hyperlink = job_url
-                    cell.font = Font(color='0563C1', underline='single')
-
-            # Adjust column widths
-            sheet.column_dimensions['A'].width = 30
-            sheet.column_dimensions['B'].width = 50
-            sheet.column_dimensions['C'].width = 12
-            sheet.column_dimensions['D'].width = 60
-            sheet.column_dimensions['E'].width = 30
-
-        # Save to BytesIO
         output = io.BytesIO()
         wb.save(output)
         output.seek(0)
@@ -1258,55 +1174,42 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
             download_name=f'{filename}.xlsx'
         )
 
-    def export_to_csv(all_data, filename, version, days):
-        """Export to CSV with all platforms in one file"""
+    def export_to_csv_enriched(enriched_rows, filename, version, days):
+        """Export enriched test results to CSV with 17-column structure"""
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Write metadata as comments
-        writer.writerow([f'# Version: {version}'])
-        writer.writerow([f'# Time Range: {days} days'])
-        writer.writerow([f'# Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-        writer.writerow([])  # Empty row
+        headers = [
+            'Test Name', 'Operator', 'Result', 'Periodic Job', 'Run Date',
+            'Job Duration', 'OCP Version', 'Platform', 'Operator CSV Version',
+            'FBC Catalog Image', 'Prow Job URL', 'E2E Test Log URL',
+            'Operator Install Log URL', 'CatalogSource Log URL', 'Artifacts URL', 'Build Log URL', 'Polarion ID'
+        ]
+        writer.writerow(headers)
 
-        # Write header
-        writer.writerow(['Platform', 'Test ID', 'Title', 'Status', 'Prow URL', 'Comments'])
+        for row in enriched_rows:
+            fmt = _format_export_row(row, empty_placeholder='')
 
-        # Write data for all platforms
-        for platform, tests in all_data.items():
-            for test in tests:
-                test_id = test['test_name']
-                title = test.get('test_description', '')
+            writer.writerow([
+                row.get('test_description') or row.get('test_name'),
+                row.get('operator') or '',
+                fmt['result_str'],
+                fmt['short_job'],
+                fmt['run_date'],
+                fmt['duration_str'],
+                row.get('ocp_version') or row.get('version') or '',
+                (row.get('platform') or '').upper(),
+                row.get('csv_version') or '',
+                row.get('fbc_image') or '',
+                row.get('job_url') or '',
+                fmt['e2e_log_url'],
+                fmt['subscribe_log_url'],
+                fmt['catalog_log_url'],
+                fmt['artifacts_url'],
+                fmt['build_log_url'],
+                row.get('polarion_id') or '',
+            ])
 
-                # Get the most recent NON-SKIPPED run (exclude skipped tests per team policy)
-                query = """
-                    SELECT status, job_url FROM test_results
-                    WHERE test_name = ? AND platform = ? AND version = ?
-                      AND status != 'skipped'
-                    ORDER BY timestamp DESC LIMIT 1
-                """
-                result = db.execute_query(query, [test['test_name'], platform, version])
-
-                # Skip tests that only have skipped runs
-                if not result or len(result) == 0:
-                    continue
-
-                # Determine status and URL from the latest non-skipped run
-                job_url = ''
-                status = 'Unknown'
-                if result and len(result) > 0:
-                    latest_status = result[0]['status']
-                    job_url = result[0]['job_url'] or ''
-                    if latest_status == 'passed':
-                        status = 'Passed'
-                    elif latest_status == 'failed':
-                        status = 'Failed'
-                    else:
-                        status = latest_status.capitalize() if latest_status else 'Unknown'
-
-                writer.writerow([platform, test_id, title, status, job_url, ''])
-
-        # Convert to bytes
         output.seek(0)
         return send_file(
             io.BytesIO(output.getvalue().encode('utf-8')),
@@ -1315,70 +1218,24 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
             download_name=f'{filename}.csv'
         )
 
-    def export_to_markdown(all_data, filename, version, days):
-        """Export to Markdown with multiple tables"""
+    def export_to_markdown_enriched(enriched_rows, filename, version, days):
+        """Export enriched test results to Markdown (8-column format for readability; full 17 columns via XLSX/CSV)"""
         output = io.StringIO()
+        output.write(f'# Dashboard Export - {version}\n\n')
+        output.write(f'**Time Range:** {days} days | **Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n')
 
-        output.write(f'# Dashboard Export\n\n')
-        output.write(f'**Version:** {version}\n\n')
-        output.write(f'**Time Range:** {days} days\n\n')
-        output.write(f'**Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n')
+        output.write('| Test Name | Operator | Result | Job | Run Date | OCP Version | Platform | Polarion |\n')
+        output.write('|-----------|----------|--------|-----|----------|-------------|----------|----------|\n')
 
-        # Create a table for each platform
-        for platform, tests in all_data.items():
-            if not tests:
-                continue
+        for row in enriched_rows:
+            fmt = _format_export_row(row)
+            name = _md_cell(row.get('test_description') or row.get('test_name'))
+            prow_url = row.get('job_url') or ''
+            job_link = f'[{_md_cell(fmt["short_job"])}]({prow_url})' if prow_url else _md_cell(fmt['short_job'])
+            ocp_ver = row.get('ocp_version') or row.get('version') or ''
 
-            # Collect non-skipped tests for this platform
-            platform_rows = []
-            for test in tests:
-                test_id = test['test_name']
-                title = test.get('test_description', '')
+            output.write(f'| {name} | {_md_cell(row.get("operator"))} | {fmt["result_str"]} | {job_link} | {fmt["run_date"]} | {ocp_ver} | {(row.get("platform") or "").upper()} | {_md_cell(row.get("polarion_id"))} |\n')
 
-                # Get the most recent NON-SKIPPED run (exclude skipped tests per team policy)
-                query = """
-                    SELECT status, job_url FROM test_results
-                    WHERE test_name = ? AND platform = ? AND version = ?
-                      AND status != 'skipped'
-                    ORDER BY timestamp DESC LIMIT 1
-                """
-                result = db.execute_query(query, [test['test_name'], platform, version])
-
-                # Skip tests that only have skipped runs
-                if not result or len(result) == 0:
-                    continue
-
-                # Determine status and URL from the latest non-skipped run
-                job_url = ''
-                status = 'Unknown'
-                if result and len(result) > 0:
-                    latest_status = result[0]['status']
-                    job_url = result[0]['job_url'] or ''
-                    if latest_status == 'passed':
-                        status = 'Passed'
-                    elif latest_status == 'failed':
-                        status = 'Failed'
-                    else:
-                        status = latest_status.capitalize() if latest_status else 'Unknown'
-
-                # Escape pipe characters in title
-                title = title.replace('|', '\\|')
-
-                # Format URL as markdown link
-                url_display = f'[Link]({job_url})' if job_url else ''
-
-                platform_rows.append(f'| {test_id} | {title} | {status} | {url_display} |\n')
-
-            # Only add platform section if there are non-skipped tests
-            if platform_rows:
-                output.write(f'## {platform}\n\n')
-                output.write('| Test ID | Title | Status | Prow URL |\n')
-                output.write('|---------|-------|--------|----------|\n')
-                for row in platform_rows:
-                    output.write(row)
-                output.write('\n')
-
-        # Convert to bytes
         output.seek(0)
         return send_file(
             io.BytesIO(output.getvalue().encode('utf-8')),
