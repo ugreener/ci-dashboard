@@ -2250,6 +2250,11 @@
                 if (status.running) {
                     wasRunning = true;
                     if (headerRefreshBtn) headerRefreshBtn.disabled = true;
+                    var syncEl = document.getElementById('headerLastSync');
+                    if (syncEl) {
+                        syncEl.textContent = 'Syncing...';
+                        syncEl.title = '';
+                    }
                     banner.classList.add('show');
                     banner.classList.remove('error', 'success');
                     message.textContent = status.progress || 'Collecting data...';
