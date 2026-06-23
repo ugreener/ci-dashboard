@@ -203,8 +203,45 @@ def run_collection_background(db_path: str, config_file: str = 'config.yaml', da
         )
         logger.info(f"Collected {len(test_results)} test results")
 
+        # Collect presubmit jobs (if configured)
+        presubmit_patterns = config.get('collector', {}).get(
+            'prow_gcs', {}
+        ).get('presubmit_job_patterns', [])
+        if presubmit_patterns and collector_type == 'prow_gcs':
+            collection_status['progress'] = 'Collecting presubmit job runs...'
+            logger.info("Collecting presubmit job runs...")
+            presubmit_job_runs = collector.collect_presubmit_job_runs(
+                start_date=start_date,
+                end_date=end_date,
+                job_patterns=presubmit_patterns,
+                versions=versions,
+                platforms=platforms,
+            )
+            logger.info(f"Collected {len(presubmit_job_runs)} presubmit job runs")
+
+            collection_status['progress'] = (
+                f'Collected {len(presubmit_job_runs)} presubmit job runs, '
+                'collecting presubmit test results...'
+            )
+            logger.info("Collecting presubmit test results...")
+            presubmit_test_results = collector.collect_presubmit_test_results(
+                start_date=start_date,
+                end_date=end_date,
+                job_patterns=presubmit_patterns,
+                versions=versions,
+                platforms=platforms,
+                job_runs=presubmit_job_runs,
+            )
+            logger.info(f"Collected {len(presubmit_test_results)} presubmit test results")
+
+            job_runs.extend(presubmit_job_runs)
+            test_results.extend(presubmit_test_results)
+
         # Save to database
-        collection_status['progress'] = f'Collected {len(test_results)} test results, saving to database...'
+        collection_status['progress'] = (
+            f'Collected {len(job_runs)} job runs and {len(test_results)} test results, '
+            'saving to database...'
+        )
         logger.info("Saving to database...")
         db = DashboardDatabase(db_path)
 
