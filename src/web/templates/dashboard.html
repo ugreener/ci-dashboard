@@ -985,6 +985,8 @@
                     <button class="op-filter-chip trigger-btn" data-operator="nhc" onclick="triggerJob(this)" style="border-color:#a855f7;">NHC</button>
                     <button class="op-filter-chip trigger-btn" data-operator="mdr" onclick="triggerJob(this)" style="border-color:#eab308;">MDR</button>
                     <button class="op-filter-chip trigger-btn" data-operator="nmo" onclick="triggerJob(this)" style="border-color:#06b6d4;">NMO</button>
+                    <span style="border-left:1px solid var(--border); height:24px; margin:0 4px;"></span>
+                    <button class="op-filter-chip trigger-btn" id="triggerAllBtn" onclick="triggerAllJobs()" style="border-color:#64748b; background:rgba(100,116,139,0.1); font-weight:600;">ALL</button>
                 </div>
                 <span id="triggerStatus" style="font-size:0.8rem; margin-left:8px;"></span>
             </div>
@@ -1367,6 +1369,55 @@
                 status.style.color = '#ef4444';
                 btn.style.background = 'rgba(239,68,68,0.15)';
                 setTimeout(function() { btn.style.background = 'transparent'; }, 2000);
+            } finally {
+                allBtns.forEach(function(b) { b.disabled = false; });
+                loadRecentTriggers();
+            }
+        }
+
+        async function triggerAllJobs() {
+            if (!confirm('Trigger periodic jobs for ALL 6 operators?\n\nThis will start up to 6 AWS clusters (~1.5-2h each). Operators on cooldown will be skipped.')) return;
+            var status = document.getElementById('triggerStatus');
+            var allBtns = document.querySelectorAll('.trigger-btn');
+            allBtns.forEach(function(b) { b.disabled = true; });
+            status.textContent = 'Triggering all operators...';
+            status.style.color = 'var(--text-muted)';
+            try {
+                var resp = await fetch('/api/trigger-all-jobs', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                var data = {};
+                var ct = resp.headers.get('content-type') || '';
+                if (ct.includes('application/json')) {
+                    data = await resp.json();
+                } else {
+                    var text = await resp.text();
+                    data = {error: text || ('Server error: HTTP ' + resp.status)};
+                }
+                if (resp.ok && data.summary) {
+                    var s = data.summary;
+                    var parts = [];
+                    if (s.triggered > 0) parts.push(s.triggered + ' triggered');
+                    if (s.skipped > 0) parts.push(s.skipped + ' skipped');
+                    if (s.failed > 0) parts.push(s.failed + ' failed');
+                    var icons = (data.results || []).map(function(r) {
+                        var op = (r.operator || '').toUpperCase();
+                        if (r.status === 'triggered') return op + '✓';
+                        if (r.status === 'skipped') return op + '—';
+                        return op + '✗';
+                    }).join('  ');
+                    status.textContent = icons + '  (' + parts.join(', ') + ')';
+                    if (s.failed > 0) { status.style.color = '#eab308'; }
+                    else if (s.triggered > 0) { status.style.color = '#22c55e'; }
+                    else { status.style.color = 'var(--text-muted)'; }
+                } else {
+                    status.textContent = 'Error: ' + (data.error || data.message || resp.statusText);
+                    status.style.color = '#ef4444';
+                }
+            } catch (e) {
+                status.textContent = 'Network error: ' + e.message;
+                status.style.color = '#ef4444';
             } finally {
                 allBtns.forEach(function(b) { b.disabled = false; });
                 loadRecentTriggers();
