@@ -1000,6 +1000,18 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
 
     TRIGGER_COOLDOWN_SECONDS = 300
 
+    @app.route('/api/trigger-job/map')
+    def api_trigger_job_map():
+        from integrations.gangway_client import get_operator_job_map, get_all_triggerable_jobs
+        from integrations import get_gangway_client
+        gangway = get_gangway_client()
+        job_map = get_operator_job_map()
+        return jsonify({
+            'enabled': gangway.enabled,
+            'operators': {op: jobs for op, jobs in sorted(job_map.items())},
+            'total_jobs': len(get_all_triggerable_jobs()),
+        })
+
     @app.route('/api/trigger-job', methods=['POST'])
     def api_trigger_job():
         from integrations import get_gangway_client

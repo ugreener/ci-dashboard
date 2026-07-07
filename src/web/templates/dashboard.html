@@ -988,14 +988,9 @@
         <div id="job-runs-tab" class="tab-content">
             <div class="controls" style="display:flex; align-items:center; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
                 <label>Trigger E2E:</label>
-                <div class="op-filter-bar">
+                <div class="op-filter-bar" id="triggerButtonBar">
                     <button class="op-filter-chip trigger-btn" onclick="triggerAllJobs(this)">All</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="far" onclick="triggerJob(this)" style="border-color:#2563eb;">FAR</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="sbr" onclick="triggerJob(this)" style="border-color:#f97316;">SBR</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="snr" onclick="triggerJob(this)" style="border-color:#22c55e;">SNR</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="nhc" onclick="triggerJob(this)" style="border-color:#a855f7;">NHC</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="mdr" onclick="triggerJob(this)" style="border-color:#eab308;">MDR</button>
-                    <button class="op-filter-chip trigger-btn" data-operator="nmo" onclick="triggerJob(this)" style="border-color:#06b6d4;">NMO</button>
+                    <span class="loading" style="font-size:0.75rem;">Loading jobs...</span>
                 </div>
                 <span id="triggerStatus" style="font-size:0.8rem; margin-left:8px;"></span>
             </div>
@@ -1303,7 +1298,7 @@
             });
             if (tabName === 'weekly-report') refreshWeeklyReport();
             if (tabName === 'test-results') loadTestResults();
-            if (tabName === 'job-runs') { loadJobRuns(); loadRecentTriggers(); }
+            if (tabName === 'job-runs') { loadJobRuns(); loadTriggerButtons(); loadRecentTriggers(); }
             if (tabName === 'presubmit') loadPresubmitResults();
         }
 
@@ -1336,19 +1331,62 @@
             }
         }
 
+        var OP_COLORS = {far:'#2563eb',sbr:'#f97316',snr:'#22c55e',nhc:'#a855f7',mdr:'#eab308',nmo:'#06b6d4'};
+
+        async function loadTriggerButtons() {
+            var bar = document.getElementById('triggerButtonBar');
+            try {
+                var resp = await fetch('/api/trigger-job/map');
+                var data = await resp.json();
+                var allBtn = bar.querySelector('[onclick*="triggerAllJobs"]');
+                bar.innerHTML = '';
+                if (allBtn) bar.appendChild(allBtn);
+                var operators = data.operators || {};
+                Object.keys(operators).forEach(function(op) {
+                    var jobs = operators[op];
+                    var color = OP_COLORS[op] || '#6b7280';
+                    if (jobs.length === 1) {
+                        var btn = document.createElement('button');
+                        btn.className = 'op-filter-chip trigger-btn';
+                        btn.dataset.jobName = jobs[0];
+                        btn.style.borderColor = color;
+                        btn.textContent = op.toUpperCase();
+                        btn.onclick = function() { triggerJob(this); };
+                        bar.appendChild(btn);
+                    } else {
+                        jobs.forEach(function(job) {
+                            var short = job.replace(/^periodic-ci-medik8s-system-tests-main-[^-]+-[^-]+-e2e-/, '');
+                            var btn = document.createElement('button');
+                            btn.className = 'op-filter-chip trigger-btn';
+                            btn.dataset.jobName = job;
+                            btn.style.borderColor = color;
+                            btn.style.fontSize = '0.65rem';
+                            btn.textContent = op.toUpperCase() + ' ' + short;
+                            btn.title = job;
+                            btn.onclick = function() { triggerJob(this); };
+                            bar.appendChild(btn);
+                        });
+                    }
+                });
+            } catch (e) {
+                bar.innerHTML = '<span style="color:#ef4444;font-size:0.75rem;">Failed to load jobs</span>';
+            }
+        }
+
         async function triggerJob(btn) {
-            var op = btn.dataset.operator;
-            if (!confirm('This will trigger a Prow E2E job for ' + op.toUpperCase() + '. Continue?')) return;
+            var jobName = btn.dataset.jobName;
+            var label = btn.textContent;
+            if (!confirm('Trigger Prow job: ' + label + '?')) return;
             var status = document.getElementById('triggerStatus');
             var allBtns = document.querySelectorAll('.trigger-btn');
             allBtns.forEach(function(b) { b.disabled = true; });
-            status.textContent = 'Triggering ' + op.toUpperCase() + '...';
+            status.textContent = 'Triggering ' + label + '...';
             status.style.color = 'var(--text-muted)';
             try {
                 var resp = await fetch('/api/trigger-job', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({operator: op})
+                    body: JSON.stringify({job_name: jobName})
                 });
                 var data = {};
                 var ct = resp.headers.get('content-type') || '';
@@ -1359,7 +1397,7 @@
                     data = {error: text || ('Server error: HTTP ' + resp.status)};
                 }
                 if (resp.ok) {
-                    var msg = op.toUpperCase() + ' triggered (id: ' + (data.execution_id || '').slice(0,8) + ')';
+                    var msg = label + ' triggered (id: ' + (data.execution_id || '').slice(0,8) + ')';
                     if (data.warning) {
                         msg += ' - WARNING: ' + data.warning;
                         status.style.color = '#eab308';
