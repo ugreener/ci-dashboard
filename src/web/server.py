@@ -1013,20 +1013,23 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({'error': 'Request body must be a JSON object'}), 400
-        operator_raw = data.get('operator')
-        if not isinstance(operator_raw, str) or not operator_raw.strip():
-            return jsonify({'error': 'Missing required field: operator'}), 400
-        operator = operator_raw.strip().lower()
+        job_name_or_operator = (data.get('job_name') or data.get('operator') or '').strip()
+        if not job_name_or_operator:
+            return jsonify({'error': 'Missing required field: operator or job_name'}), 400
+        operator = job_name_or_operator.lower()
 
-        from integrations.gangway_client import OPERATOR_JOB_MAP
-        if operator not in OPERATOR_JOB_MAP:
+        from integrations.gangway_client import get_operator_job_map, get_all_triggerable_jobs
+        job_map = get_operator_job_map()
+        all_jobs = get_all_triggerable_jobs()
+        if operator not in job_map and job_name_or_operator not in all_jobs:
             return jsonify({
-                'error': f'Unknown operator: {operator}. Valid: {", ".join(sorted(OPERATOR_JOB_MAP))}'
+                'error': f'Unknown operator or job: {operator}. Valid operators: {", ".join(sorted(job_map))}'
             }), 400
 
+        cooldown_key = operator if operator in job_map else job_name_or_operator
         try:
             allowed, remaining, placeholder_id = db.check_cooldown_and_reserve(
-                operator, TRIGGER_COOLDOWN_SECONDS)
+                cooldown_key, TRIGGER_COOLDOWN_SECONDS)
         except Exception:
             app.logger.exception("Cooldown check failed for %s", operator)
             return jsonify({'error': 'Rate limit check failed. Try again later.'}), 503
@@ -1035,14 +1038,14 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
                 return jsonify({'error': 'Rate limit check failed. Try again later.'}), 503
             return jsonify({'error': f'Rate limited. Try again in {remaining}s.'}), 429
 
-        result, error = gangway.trigger_job(operator)
+        result, error = gangway.trigger_job(job_name_or_operator)
         if error:
             try:
                 db.update_gangway_execution(placeholder_id, "FAILED",
                                             error_message=error)
             except Exception:
-                app.logger.exception("DB update failed for %s", operator)
-            if 'Unknown operator' in error:
+                app.logger.exception("DB update failed for %s", job_name_or_operator)
+            if 'Unknown' in error:
                 return jsonify({'error': error}), 400
             return jsonify({'error': error}), 502
 
@@ -1076,7 +1079,7 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
     @app.route('/api/trigger-all-jobs', methods=['POST'])
     def api_trigger_all_jobs():
         from integrations import get_gangway_client
-        from integrations.gangway_client import OPERATOR_JOB_MAP
+        from integrations.gangway_client import get_all_triggerable_jobs, _OPERATOR_PATTERN
         gangway = get_gangway_client()
         if not gangway.enabled:
             return jsonify({
@@ -1089,16 +1092,18 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
         skipped = 0
         failed = 0
 
-        operators = list(OPERATOR_JOB_MAP.keys())
-        for idx, operator in enumerate(operators):
-            entry = {'operator': operator, 'status': None, 'message': None,
-                     'execution_id': None}
+        all_jobs = get_all_triggerable_jobs()
+        for idx, job_name in enumerate(all_jobs):
+            op_match = _OPERATOR_PATTERN.search(job_name)
+            operator = op_match.group(1) if op_match else job_name
+            entry = {'operator': operator, 'job_name': job_name,
+                     'status': None, 'message': None, 'execution_id': None}
 
             try:
                 allowed, remaining, placeholder_id = db.check_cooldown_and_reserve(
-                    operator, TRIGGER_COOLDOWN_SECONDS)
+                    job_name, TRIGGER_COOLDOWN_SECONDS)
             except Exception:
-                app.logger.exception("Cooldown check failed for %s", operator)
+                app.logger.exception("Cooldown check failed for %s", job_name)
                 entry['status'] = 'failed'
                 entry['message'] = 'Rate limit check failed'
                 failed += 1
@@ -1117,13 +1122,13 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
                 results.append(entry)
                 continue
 
-            result, error = gangway.trigger_job(operator)
+            result, error = gangway.trigger_job(job_name)
             if error:
                 try:
                     db.update_gangway_execution(placeholder_id, "FAILED",
                                                 error_message=error)
                 except Exception:
-                    app.logger.exception("DB update failed for %s", operator)
+                    app.logger.exception("DB update failed for %s", job_name)
                 entry['status'] = 'failed'
                 entry['message'] = error
                 failed += 1
@@ -1159,7 +1164,7 @@ def create_app(db_path: str, config: dict = None, config_file: str = 'config.yam
             triggered += 1
             results.append(entry)
 
-            if idx < len(operators) - 1:
+            if idx < len(all_jobs) - 1:
                 time.sleep(0.2)
 
         return jsonify({

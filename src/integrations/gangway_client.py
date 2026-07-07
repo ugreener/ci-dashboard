@@ -18,14 +18,50 @@ logger = logging.getLogger(__name__)
 
 GANGWAY_BASE_URL = "https://gangway-ci.apps.ci.l2s4.p1.openshiftapps.com/v1"
 
-OPERATOR_JOB_MAP = {
-    "far": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-far-weekly-aws",
-    "sbr": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-sbr-weekly-aws-odf",
-    "snr": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-snr-weekly-aws",
-    "mdr": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-mdr-weekly-aws",
-    "nmo": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-nmo-weekly-aws",
-    "nhc": "periodic-ci-medik8s-system-tests-main-4.22-konflux-e2e-nhc-weekly-aws",
-}
+_KNOWN_OPERATORS = ("far", "sbr", "snr", "mdr", "nmo", "nhc")
+_OPERATOR_PATTERN = re.compile(r'-e2e-(' + '|'.join(_KNOWN_OPERATORS) + r')-')
+
+_job_map_cache = None
+
+
+def _load_job_patterns_from_config():
+    config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config.yaml')
+    try:
+        import yaml
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get('collector', {}).get('prow_gcs', {}).get('job_patterns', [])
+    except Exception:
+        logger.warning("Could not load config.yaml, falling back to empty job list")
+        return []
+
+
+def get_operator_job_map():
+    """Build operator-to-jobs mapping from config.yaml job_patterns.
+
+    Returns dict mapping operator name to list of periodic job names.
+    Derives operator from the '-e2e-<operator>-' segment in each job name.
+    """
+    global _job_map_cache
+    if _job_map_cache is not None:
+        return _job_map_cache
+
+    result = {}
+    for job in _load_job_patterns_from_config():
+        m = _OPERATOR_PATTERN.search(job)
+        if m:
+            op = m.group(1)
+            result.setdefault(op, []).append(job)
+    _job_map_cache = result
+    return result
+
+
+def get_all_triggerable_jobs():
+    """Return flat list of all periodic job names from config."""
+    job_map = get_operator_job_map()
+    return [job for jobs in job_map.values() for job in jobs]
+
+
 
 
 class GangwayClient:
@@ -60,10 +96,36 @@ class GangwayClient:
             logger.error("Gangway %s %s failed: %s", method, path, e)
             return {"error": "Gangway request failed"}, 0
 
-    def trigger_job(self, operator):
-        job_name = OPERATOR_JOB_MAP.get(operator.lower())
-        if not job_name:
-            return None, f"Unknown operator: {operator}. Valid: {', '.join(sorted(OPERATOR_JOB_MAP))}"
+    def trigger_job(self, job_name_or_operator):
+        """Trigger a periodic job by full job name or operator shorthand.
+
+        If the argument matches a full job name from config, use it directly.
+        If it matches an operator name (far, sbr, etc.) and that operator has
+        exactly one job, use that job. If the operator has multiple jobs,
+        return an error listing the available job names.
+        """
+        job_map = get_operator_job_map()
+        all_jobs = get_all_triggerable_jobs()
+        key = job_name_or_operator.strip().lower()
+
+        if key in all_jobs or job_name_or_operator in all_jobs:
+            job_name = job_name_or_operator if job_name_or_operator in all_jobs else key
+            op_match = _OPERATOR_PATTERN.search(job_name)
+            operator = op_match.group(1) if op_match else key
+        elif key in job_map:
+            jobs = job_map[key]
+            if len(jobs) == 1:
+                job_name = jobs[0]
+                operator = key
+            else:
+                return None, (
+                    f"Operator '{key}' has {len(jobs)} jobs. "
+                    f"Specify the full job name: {', '.join(jobs)}"
+                )
+        else:
+            valid = sorted(set(list(job_map.keys()) + all_jobs))
+            return None, f"Unknown job or operator: {key}. Valid: {', '.join(sorted(job_map.keys()))}"
+
         payload = {"job_name": job_name, "job_execution_type": "1"}
         resp, status = self._request("POST", "/executions", payload)
         if 200 <= status < 300:
@@ -73,7 +135,7 @@ class GangwayClient:
             return {
                 "execution_id": execution_id,
                 "job_name": job_name,
-                "operator": operator.lower(),
+                "operator": operator,
                 "status": resp.get("job_status", "TRIGGERED"),
             }, None
         return None, resp.get("error", f"HTTP {status}")
